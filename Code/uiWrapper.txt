@@ -1,0 +1,35 @@
+FUNCTION_BLOCK UiWrapper
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	startTrigger: 				R_TRIG;
+	stopTrigger: 				R_TRIG;
+	quitTrigger: 				R_TRIG;
+	moveMagazineUpTrigger: 	R_TRIG;
+
+	blinkTimer:				TON;
+END_VAR
+
+(*trigger to check for button presses*)
+startTrigger(CLK := Button_Start);
+quitTrigger(CLK := Button_Quit);
+moveMagazineUpTrigger(CLK := Button_Select);
+stopTrigger(CLK := Button_Stop);
+
+(*connects plc variables to buttons and leds*)
+LED_Error := error;
+LED_Start := start;
+LED_Stop := stop OR pause;
+
+IF error THEN
+	blinkTimer(IN := NOT blinkTimer.Q, PT := T#1.5S);
+
+END_IF
+IF blinkTimer.Q THEN
+	LED_Quit := NOT LED_Quit;
+END_IF
+IF quitTrigger.Q THEN
+	LED_Quit := FALSE;
+END_IF

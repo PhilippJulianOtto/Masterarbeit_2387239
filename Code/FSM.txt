@@ -1,0 +1,345 @@
+FUNCTION_BLOCK FSM
+VAR
+	state :					INT := 000;
+	prevState:				INT := 000;
+
+	errorCounter:				INT := 0;
+	rowCounter: 				INT := 0;
+	cardCounter:				INT := 0;
+	cardsToSort:				INT := 760;
+
+	cardGripped:				BOOL := FALSE;
+	safeSorting:				BOOL := FALSE;
+
+
+	dropTimer :				TON;
+	stopTimer:				TON;
+	gripperUpImpuls:			TP;
+	gripperDownImpuls:		TP;
+	doorClosedTrigger:		R_TRIG;
+
+	fbConveyorWrapper:		conveyorWrapper;
+	fbMagazineWrapper:		magazineWrapper;
+	fbPortalWrapper:			portalWrapper;
+
+END_VAR
+
+fbConveyorWrapper();
+fbMagazineWrapper();
+fbPortalWrapper();
+
+dropTimer(PT := T#300ms);
+stopTimer(IN := Button_Stop, PT := T#1H);
+gripperUpImpuls(PT := T#200ms);
+gripperDownImpuls(PT := T#200ms);
+doorClosedTrigger(CLK := door_Stop);
+
+(*handles the impuls valve of the gripper cylinder*)
+gripper_down := gripperDownImpuls.Q;
+gripper_up := gripperUpImpuls.Q;
+
+IF NOT error THEN
+	bReset := TRUE;
+END_IF
+
+(*asynchronous signals*)
+(*prevents the second axis from moving while the gripper is down*)
+IF gripper_IsDown AND (fbPortalWrapper.bMoveAbsolute OR fbPortalWrapper.bExecuteHome OR fbPortalWrapper.bMoveRelative OR fbPortalWrapper.bMoveLeft OR fbPortalWrapper.bMoveRight) THEN
+	dropTimer.IN := FALSE;
+	state := 999;
+END_IF
+
+(*signal that the conveyor belt has finished its movement*)
+IF fbConveyorWrapper.fbMoveRelative.Done THEN
+	fbConveyorWrapper.bMoveRelative := FALSE;
+END_IF
+
+(*signal that the magazine has finished its movement*)
+IF fbMagazineWrapper.fbMoveRelative.Done THEN
+	fbMagazineWrapper.bMoveRelative := FALSE;
+END_IF
+
+(*checks the vacuum sensor and turns off the ejector*)
+IF gripper_on AND NOT vacuumSensor  AND cardGripped THEN
+	gripper_on := FALSE;
+END_IF
+
+(*emergency stop*)
+IF( (NOT E_Stop)  OR (NOT door_Stop)) AND state <> 000 THEN
+	dropTimer.IN := FALSE;
+	state := 999;
+END_IF
+
+
+(*checks if the trays are properly insertet*)
+IF  (traySensor_1 OR traySensor_2) AND state <> 000 THEN
+	state := 999;
+END_IF
+
+(*pause function. pressing start again continous the process*)
+IF MAIN.fbUiWrapper.stopTrigger.Q AND state <> 000  AND state <> 800 THEN
+	dropTimer.IN := FALSE;
+	prevState := state;
+	state := 800;
+END_IF
+
+CASE state OF
+	(*Init - state*)
+	000:
+		gripperDownImpuls.IN := FALSE;
+		gripperUpImpuls.IN := FALSE;
+		stop := TRUE;
+		start := FALSE;
+		IF MAIN.fbUiWrapper.startTrigger.Q AND (cardCounter < cardsToSort OR Button_Select) THEN
+			stop := FALSE;
+			pause := FALSE;
+			start := TRUE;
+			state := 001;
+		END_IF
+
+	(*enabling all axis*)
+	001:
+		fbConveyorWrapper.bEnable := TRUE;
+		fbPortalWrapper.bEnable := TRUE;
+		fbMagazineWrapper.bEnable:= TRUE;
+		gripperUpImpuls.IN := TRUE;
+		IF fbConveyorWrapper.bAxis_Ready AND fbPortalWrapper.bAxis_Ready AND fbMagazineWrapper.bAxis_Ready AND gripper_IsUp THEN
+			gripperUpImpuls.IN := FALSE;
+			state := 002;
+		END_IF
+
+	(*checks if the all axis are homed*)
+	002:
+		IF fbPortalWrapper.bIsHomed  AND fbMagazineWrapper.bIsHomed THEN
+			IF Button_Select THEN
+				state := 100;
+			END_IF
+			IF NOT Button_Select  AND strNC_TO_PLC_Axis_3.fPosIst < -5 THEN
+				state := 101;
+			END_IF
+			IF NOT Button_Select AND strNC_TO_PLC_Axis_3.fPosIst > -5 THEN
+				state := 999;
+			END_IF
+		ELSE
+			state := 003;
+		END_IF
+
+	(*homing state*)
+	003:
+		fbMagazineWrapper.bExecuteHome := TRUE;
+		fbPortalWrapper.bExecuteHome := TRUE;
+		IF fbPortalWrapper.bIsHomed  AND fbMagazineWrapper.bIsHomed THEN
+			fbPortalWrapper.bExecuteHome := FALSE;
+			fbMagazineWrapper.bExecuteHome := FALSE;
+			state := 002;
+		END_IF
+
+	(*moves magazine in upper position*)
+	100:
+		fbMagazineWrapper.lrPosition_Drive_to := magazineUp;
+		fbMagazineWrapper.bMoveAbsolute := TRUE;
+		IF fbMagazineWrapper.fbMoveAbsolute.Done THEN
+			(*resets cardCounter when the magazine is moved to the upper pos*)
+			cardCounter := 0;
+			fbMagazineWrapper.bMoveAbsolute := FALSE;
+			state := 101;
+		END_IF
+
+	(*move towards and pick up a card*)
+	101:
+		IF rowCounter > 3 THEN
+			rowCounter := 0;
+		END_IF
+		CASE rowCounter OF
+			0:
+				fbPortalWrapper.lrPosition_Drive_to := Row_1;
+			1:
+				fbPortalWrapper.lrPosition_Drive_to := Row_4;
+			2:
+				fbPortalWrapper.lrPosition_Drive_to := Row_2;
+			3:
+				fbPortalWrapper.lrPosition_Drive_to := Row_5;
+		END_CASE
+
+		fbPortalWrapper.bMoveAbsolute := TRUE;
+		IF fbPortalWrapper.fbMoveAbsolute.Done THEN
+			fbPortalWrapper.bMoveAbsolute := FALSE;
+			state := 102;
+
+			(*counts up for each row picked to select the next target row*)
+			rowCounter := rowCounter + 1;
+		END_IF
+
+	102:
+		gripperDownImpuls.IN := TRUE;
+		gripper_on := TRUE;
+		IF gripper_IsDown THEN
+			gripperDownImpuls.IN := FALSE;
+			state := 103;
+		END_IF
+
+	103:
+		gripper_on := TRUE;
+		IF vacuumSensor THEN
+			cardGripped := TRUE;
+			state := 104;
+		END_IF
+
+	104:
+		gripperUpImpuls.IN := TRUE;
+		IF gripper_IsUp AND vacuumSensor THEN
+			gripperUpImpuls.IN := FALSE;
+			state := 201;
+		END_IF
+		IF gripper_IsUp AND NOT  vacuumSensor THEN
+			gripperUpImpuls.IN := FALSE;
+			errorCounter := errorCounter +1;
+			rowCounter := rowCounter - 1;
+			rowCounter := LIMIT(0, rowCounter, 3);
+			state := 101;
+			IF errorCounter > 1 THEN
+				error := TRUE;
+				state := 997;
+			END_IF
+		END_IF
+
+	(*move towards conveyor and drop the cards*)
+	201:
+		fbPortalWrapper.lrPosition_Drive_to := Row_3;
+		fbPortalWrapper.bMoveAbsolute := TRUE;
+		IF  fbPortalWrapper.fbMoveAbsolute.Done  THEN
+			(*card counting for magazine and lifetime*)
+			cardCounter := cardCounter + 8;
+			lifetimeCardCounter := lifetimeCardCounter + 8;
+
+			fbPortalWrapper.bMoveAbsolute := FALSE;
+			IF safeSorting THEN
+				state := 202;
+			ELSE
+				state := 204;
+			END_IF
+		END_IF
+	(*safely dropping the card*)
+	202:
+		gripper_down := TRUE;
+		dropTimer.IN := TRUE;
+		IF dropTimer.Q THEN
+			dropTimer.IN := FALSE;
+			state := 203;
+		END_IF
+
+	203:
+		gripper_on := FALSE;
+		cardGripped := FALSE;
+		gripper_down := FALSE;
+		IF gripper_IsUp THEN
+			state := 205;
+		END_IF
+
+	204:
+		gripper_on := FALSE;
+		cardGripped := FALSE;
+		state := 205;
+
+	(*moving state axis 1 and 3*)
+	205:
+		fbConveyorWrapper.bMoveRelative := TRUE;
+		(*starts moving the magazine only after 120 cards to make the magazine larger*)
+		IF cardCounter > 120 THEN
+			fbMagazineWrapper.bMoveRelative := TRUE;
+		END_IF
+
+		IF cardCounter < cardsToSort THEN
+			state := 101;
+		END_IF
+		IF fbConveyorWrapper.fbMoveRelative.Done AND fbMagazineWrapper.fbMoveRelative.Done THEN
+			state := 900;
+		END_IF
+
+	(*pause state*)
+	800:
+		fbConveyorWrapper.bStop := TRUE;
+		fbPortalWrapper.bStop := TRUE;
+		fbMagazineWrapper.bStop := TRUE;
+		pause := TRUE;
+		bReset := TRUE;
+		IF MAIN.fbUiWrapper.startTrigger.Q THEN
+			pause := FALSE;
+			state := prevState;
+		END_IF
+		IF stopTimer.ET > T#2S THEN
+			fbConveyorWrapper.bMoveRelative := FALSE;
+			fbMagazineWrapper.bMoveRelative := FALSE;
+			fbMagazineWrapper.bMoveAbsolute := FALSE;
+			fbPortalWrapper.bMoveAbsolute := FALSE;
+			pause := FALSE;
+			state := 997;
+		END_IF
+
+	(*end state*)
+	900:
+		start := FALSE;
+		fbConveyorWrapper.bEnable := FALSE;
+		fbPortalWrapper.bEnable := FALSE;
+		fbMagazineWrapper.bEnable := FALSE;
+		state := 000;
+
+	(*error handling. moves gripper and and above the conveyor belt*)
+	997:
+		bReset := TRUE;
+		fbPortalWrapper.bEnable := TRUE;
+		gripperUpImpuls.IN := TRUE;
+		gripper_on := FALSE;
+		cardGripped := FALSE;
+		IF gripper_IsUp AND  fbPortalWrapper.bAxis_Ready THEN
+			gripperUpImpuls.IN := FALSE;
+			IF NOT fbPortalWrapper.bIsHomed  AND NOT fbMagazineWrapper.bIsHomed THEN
+				state := 0;
+				fbPortalWrapper.bEnable := FALSE;
+			ELSE
+				state := 998;
+			END_IF
+		END_IF
+
+	(*error handling. moves gripper and and above the conveyor belt*)
+	998:
+		fbPortalWrapper.lrPosition_Drive_to := Row_3;
+		fbPortalWrapper.bMoveAbsolute := TRUE;
+		IF  fbPortalWrapper.fbMoveAbsolute.Done  THEN
+			fbPortalWrapper.bMoveAbsolute := FALSE;
+			IF error THEN
+				state := 999;
+			ELSE
+				fbConveyorWrapper.bEnable := FALSE;
+				fbPortalWrapper.bEnable := FALSE;
+				fbMagazineWrapper.bEnable := FALSE;
+				state := 000;
+			END_IF
+		END_IF
+
+	(*error state*)
+	999:
+		bReset := FALSE;
+		error := TRUE;
+		start := FALSE;
+		fbConveyorWrapper.bEnable := FALSE;
+		fbPortalWrapper.bEnable := FALSE;
+		fbMagazineWrapper.bEnable := FALSE;
+
+		fbConveyorWrapper.bMoveRelative := FALSE;
+		fbMagazineWrapper.bMoveRelative := FALSE;
+		fbMagazineWrapper.bMoveAbsolute := FALSE;
+		fbPortalWrapper.bMoveAbsolute := FALSE;
+		fbPortalWrapper.bExecuteHome := FALSE;
+		fbMagazineWrapper.bExecuteHome := FALSE;
+
+		IF MAIN.fbUiWrapper.quitTrigger.Q THEN
+			errorCounter := 0;
+			bReset := TRUE;
+			error := FALSE;
+			state := 997;
+		END_IF
+
+ELSE
+	error := TRUE;
+END_CASE;

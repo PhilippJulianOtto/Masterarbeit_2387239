@@ -1,0 +1,130 @@
+FUNCTION_BLOCK conveyorWrapper
+VAR_INPUT
+	lrPosition_Drive_to:			LREAL;
+	bExecuteHome:				BOOL;
+	bReset_Axis:	 				BOOL;
+	bMoveRelative: 				BOOL;
+	bMove_Absolut: 				BOOL;
+	bStop: 						BOOL;
+	bEnable:						BOOL;
+	bMoveRight: 					BOOL;
+	bMoveLeft: 					BOOL;
+
+END_VAR
+VAR_OUTPUT
+	bMove_Absolut_Aborted: 		BOOL;
+	bMove_Absolut_Done: 		BOOL;
+	bReset_Done: 				BOOL;
+	bIsHomed: 					BOOL := FALSE;
+
+END_VAR
+VAR
+	fbPower:		 				MC_Power;
+	fbMoveVelocity:				MC_MoveVelocity;
+	fbMoveRelative:				MC_MoveRelative;
+	fbMoveAbsolute:				MC_MoveAbsolute;
+	direction :					MC_Direction;
+	fbReset_Axis: 				MC_Reset;
+	fbHomeAxis:					MC_Home;
+	fbStop: 						MC_Stop;
+	fbReset:						MC_Reset;
+
+	bAxis_Ready: 				BOOL;
+	maxVelocity: 					LREAL:= 400;
+	distance_relative:				LREAL := 900;
+END_VAR
+
+*enables controller *)
+fbPower(
+	Enable 			:=	bEnable,
+	Enable_Positive 	:= 	bEnable,
+	Enable_Negative 	:= 	bEnable,
+	Override 			:= 	100.000,
+	AxisRefIn 		:= 	strNC_TO_PLC_Axis_1,
+	AxisRefOut 		:= 	strPLC_TO_NC_Axis_1,
+	status 			=>	,
+	Error			=>	,
+	ErrorID 			=>	);
+
+(*checks if the axis is ready *)
+bAxis_Ready := AxisIsReady(strNC_TO_PLC_Axis_1.nStateDWord);
+
+(*reset the axis*)
+fbReset_Axis(
+	Execute			:=	bReset_Axis,
+	Axis				:= 	strNC_TO_PLC_Axis_1,
+	Done			=>	bReset_Done,
+	Error			=>	,
+	ErrorID			=>	);
+
+(*home command of axis*)
+fbHomeAxis(
+	Execute :=			bExecuteHome,
+    	Position  :=			DEFAULT_HOME_POSITION,
+   	Axis := 				strNC_TO_PLC_Axis_1,
+	AxisOut := 			strPLC_TO_NC_Axis_1);
+
+(*command for realative movement*)
+fbMoveRelative(
+    	Execute      		:=	bMoveRelative,
+    	Distance     		:=	distance_relative,
+    	Velocity     		:=	maxVelocity * speedMod,
+	Acceleration		:=	,
+	Deceleration		:= 	,
+	Axis				:= 	strNC_TO_PLC_Axis_1,
+	Jerk				:=	);
+
+
+(*command for endless movement*)
+IF bMoveRight THEN
+	direction := MC_Positive_Direction;
+ELSIF bMoveLeft THEN
+	direction := MC_Negative_Direction;
+END_IF
+
+fbMoveVelocity(
+	Execute			:= 	bMoveRight OR bMoveLeft,
+	Velocity			:= 	maxVelocity * speedMod,
+	Acceleration		:=	,
+	Deceleration		:= 	,
+	Jerk				:= 	,
+	Direction			:= 	direction,
+	Axis				:= 	strNC_TO_PLC_Axis_1,
+	inVelocity		=>	,
+	CommandAborted	=>	,
+	Error			=>	,
+	ErrorId			=>	);
+
+IF bMove_Absolut OR bMoveLeft OR bMoveRight THEN
+	bStop := FALSE;
+ELSE
+	bStop := TRUE;
+END_IF
+
+(*command for absolute movement*)
+fbMoveAbsolute(
+	Execute			:=	bMove_Absolut,
+	Position			:=	lrPosition_Drive_to,
+	Velocity  			:=	maxVelocity * speedMod,
+	Acceleration		:= 	,
+	Deceleration		:= 	,
+	Jerk 			:= 	,
+	Axis				:= 	strNC_TO_PLC_Axis_1,
+	Done			=>	bMove_Absolut_Done,
+	CommandAborted=>	bMove_Absolut_Aborted,
+	Error			=> 	,
+	ErrorID			=>	);
+
+(*stopps the axis*)
+fbStop(
+	Execute			:=	bStop,
+	Deceleration 		:= 	5000,
+	Jerk				:=	,
+	Axis				:= 	strNC_TO_PLC_Axis_1,
+	Done			=> 	,
+	Error			=> 	,
+	ErrorID			=> 	);
+
+fbReset(
+	Axis				:= 	strNC_TO_PLC_Axis_1,
+	Execute 			:= 	bReset);

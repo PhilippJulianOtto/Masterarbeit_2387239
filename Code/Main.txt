@@ -1,0 +1,13 @@
+PROGRAM MAIN
+VAR
+	fbFSM :					FSM;
+	fbUiWrapper:				UiWrapper;
+	cardsPicked:				INT;
+END_VAR
+
+(*ensures speedMod is a valid value*)
+speedMod := LIMIT(0, speedMod, 1);
+
+(*cyclic calling of function blocks- "system cycle" *)
+fbUiWrapper();
+fbFSM();
